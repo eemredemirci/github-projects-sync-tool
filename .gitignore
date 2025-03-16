@@ -120,4 +120,7 @@ data/
 !data/.gitkeep
 !data/users/.gitkeep
 !data/repositories/.gitkeep
-!data/projects/.gitkeep 
+!data/projects/.gitkeep
+
+# IDE specific
+.cursor/ 
