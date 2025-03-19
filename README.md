@@ -1,4 +1,4 @@
-# GitHub Project Management Tool
+# GitHub Project Management Tool  [EN / TR]
 
 A command-line tool for managing and synchronizing GitHub repositories and GitHub Projects locally. This tool allows you to work with GitHub Projects, issues, milestones, and roadmaps in both online and offline modes.
 
