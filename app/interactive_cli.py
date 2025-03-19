@@ -1311,6 +1311,13 @@ def fetch_project_data(user: Dict[str, Any], project: Dict[str, Any]) -> bool:
         # GitHub'dan proje verilerini al
         github_data = github_service.get_project_v2(project_id)
         
+        # Parent issue ilişkilerini analiz et
+        try:
+            print_info("Issue içeriklerini analiz ederek parent ilişkileri tespit ediliyor...")
+            github_data = github_service.post_process_project_items(github_data)
+        except Exception as e:
+            print_warning(f"Issue ilişkileri analiz edilirken hata oluştu: {str(e)}")
+        
         if not github_data:
             print_error(f"Proje verileri çekilemedi: {project_name}")
             print_info("Proje silinmiş veya erişim izniniz olmayabilir.")
@@ -1320,41 +1327,29 @@ def fetch_project_data(user: Dict[str, Any], project: Dict[str, Any]) -> bool:
         project_dir = os.path.join(sync_service.projects_dir, f"{project_id}_{project_name.replace(' ', '_').replace('/', '_')}")
         os.makedirs(project_dir, exist_ok=True)
         
-        # Tarih bilgisini al
-        current_date = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
-        # JSON olarak kaydet
-        json_file = os.path.join(project_dir, f"project_{current_date}.json")
+        # Ana proje dosyalarını kaydet
+        json_file = os.path.join(project_dir, "project.json")
         with open(json_file, "w", encoding="utf-8") as f:
             json.dump(github_data, f, indent=2, ensure_ascii=False)
         print_success(f"JSON dosyası kaydedildi: {shorten_path(json_file)}")
         
-        # Sembolik link oluştur (her zaman en son dosyayı gösterecek)
-        latest_json_file = os.path.join(project_dir, "project.json")
-        if os.path.exists(latest_json_file):
-            os.remove(latest_json_file)
-        
-        # Dosyayı kopyala
-        shutil.copy2(json_file, latest_json_file)
-        print_info(f"En son JSON dosyası güncellendi: {shorten_path(latest_json_file)}")
-        
-        # YAML olarak kaydet
-        yaml_file = os.path.join(project_dir, f"project_{current_date}.yaml")
-        
-        # JSON'ı YAML'a dönüştür
-        import yaml
+        yaml_file = os.path.join(project_dir, "project.yaml")
         with open(yaml_file, "w", encoding="utf-8") as f:
             yaml.dump(github_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
         print_success(f"YAML dosyası kaydedildi: {shorten_path(yaml_file)}")
         
-        # Sembolik link oluştur (her zaman en son dosyayı gösterecek)
-        latest_yaml_file = os.path.join(project_dir, "project.yaml")
-        if os.path.exists(latest_yaml_file):
-            os.remove(latest_yaml_file)
+        # ProjectOrganizer ile yapılandırılmış klasör yapısını oluştur
+        from app.utils.project_organizer import ProjectOrganizer
+        organizer = ProjectOrganizer(project_dir)
+        if organizer.organize(github_data):
+            print_success("Proje verileri yapılandırılmış klasörlere kaydedildi")
+        else:
+            print_error("Proje verilerini yapılandırılmış klasörlere kaydederken hata oluştu")
         
-        # Dosyayı kopyala
-        shutil.copy2(yaml_file, latest_yaml_file)
-        print_info(f"En son YAML dosyası güncellendi: {shorten_path(latest_yaml_file)}")
+        # Eski sürüm dosyalarını temizle
+        removed_count = organizer.cleanup_old_versions()
+        if removed_count > 0:
+            print_info(f"{removed_count} eski sürüm dosyası temizlendi")
         
         # Proje adı değişmiş mi kontrol et
         github_project_name = github_data.get("title", github_data.get("name", ""))

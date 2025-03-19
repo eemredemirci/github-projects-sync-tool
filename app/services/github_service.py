@@ -6,6 +6,7 @@ import json
 import requests
 import time
 from typing import Dict, List, Optional, Any, Tuple
+import re
 
 from app.utils.language import get_text
 
@@ -1150,6 +1151,7 @@ class GitHubService:
                   id
                   content {
                     ... on Issue {
+                      id
                       title
                       number
                       state
@@ -1170,12 +1172,67 @@ class GitHubService:
                         }
                       }
                       
-                      # Parent issue ilişkisi
-                      trackedInIssues(first: 1) {
+                      # Parent issue field
+                      parent {
+                        title
+                        number
+                        url
+                      }
+                      
+                      # Parent issues - issues this issue tracks
+                      trackedIssues(first: 5) {
                         nodes {
                           title
                           number
                           url
+                        }
+                      }
+                      
+                      # Child issues - issues tracking this issue
+                      trackedInIssues(first: 5) {
+                        nodes {
+                          title
+                          number
+                          url
+                        }
+                      }
+                      
+                      # Body içeriğinde ilişkili issue'ları çekebiliriz
+                      body
+
+                      # Relations via timeline
+                      timelineItems(first: 20, itemTypes: [CONNECTED_EVENT, DISCONNECTED_EVENT, CROSS_REFERENCED_EVENT]) {
+                        nodes {
+                          ... on ConnectedEvent {
+                            subject {
+                              ... on Issue {
+                                id
+                                title
+                                number
+                                url
+                              }
+                            }
+                          }
+                          ... on DisconnectedEvent {
+                            subject {
+                              ... on Issue {
+                                id
+                                title
+                                number
+                                url
+                              }
+                            }
+                          }
+                          ... on CrossReferencedEvent {
+                            source {
+                              ... on Issue {
+                                id
+                                title
+                                number
+                                url
+                              }
+                            }
+                          }
                         }
                       }
                       
@@ -1381,14 +1438,26 @@ class GitHubService:
                         })
                 
                 # Extract parent issue
-                if "trackedInIssues" in content:
-                    tracked_issues = content.get("trackedInIssues", {}).get("nodes", [])
-                    if tracked_issues:
-                        item_data["parent_issue"] = {
-                            "title": tracked_issues[0].get("title"),
-                            "number": tracked_issues[0].get("number"),
-                            "url": tracked_issues[0].get("url")
-                        }
+                parent_issue = None
+                
+                # 1. Direct parent field - Sadece bu direkt ilişkiyi kullanalım
+                if "parent" in content and content["parent"]:
+                    parent = content.get("parent", {})
+                    parent_issue = {
+                        "title": parent.get("title"),
+                        "number": parent.get("number"),
+                        "url": parent.get("url"),
+                        "source": "direct_parent"
+                    }
+                
+                # Diğer kaynaklardan gelen parent ilişkilerini kullanmıyoruz:
+                # 2. tracked issues - Bu kısım pasif
+                # 3. timeline items - Bu kısım pasif
+                # 4. Body analizi - Bu kısım pasif
+                
+                # İlişki bilgisini ekle - sadece direct_parent varsa
+                if parent_issue and parent_issue.get("source") == "direct_parent":
+                    item_data["parent_issue"] = parent_issue
                 
                 # Extract repository
                 if "repository" in content:
@@ -1430,4 +1499,350 @@ class GitHubService:
         print(f"Items: {len(project['items'])}")
         print(f"Related Repositories: {len(project['repositories'])}")
         
+        return project
+    
+    def fetch_issue_with_parent(self, issue_id: str) -> Dict[str, Any]:
+        """
+        Doğrudan issue ID'si kullanarak parent issue bilgilerini getirir.
+        
+        Args:
+            issue_id: Issue'nun ID'si
+            
+        Returns:
+            Issue ve parent issue bilgileri
+        """
+        endpoint = "/graphql"
+        
+        query = """
+        query($issueId: ID!) {
+          node(id: $issueId) {
+            ... on Issue {
+              id
+              title
+              number
+              state
+              url
+              body
+              
+              # Parent issue field - direct parent
+              parent {
+                id
+                title
+                number
+                url
+              }
+              
+              # Parent issues - issues this issue tracks
+              trackedIssues(first: 5) {
+                nodes {
+                  id
+                  title
+                  number
+                  url
+                }
+              }
+              
+              # Child issues - issues tracking this issue
+              trackedInIssues(first: 5) {
+                nodes {
+                  id
+                  title
+                  number
+                  url
+                }
+              }
+              
+              # Related issues - linked issues relationship
+              linkedIssues: timelineItems(first: 20, itemTypes: [CONNECTED_EVENT, DISCONNECTED_EVENT, CROSS_REFERENCED_EVENT]) {
+                nodes {
+                  ... on ConnectedEvent {
+                    id
+                    subject {
+                      ... on Issue {
+                        id
+                        title
+                        number
+                        url
+                      }
+                    }
+                  }
+                  ... on DisconnectedEvent {
+                    id
+                    subject {
+                      ... on Issue {
+                        id
+                        title
+                        number
+                        url
+                      }
+                    }
+                  }
+                  ... on CrossReferencedEvent {
+                    source {
+                      ... on Issue {
+                        id
+                        title
+                        number
+                        url
+                      }
+                    }
+                  }
+                }
+              }
+              
+              milestone {
+                id
+                title
+                dueOn
+                state
+              }
+              assignees(first: 5) {
+                nodes {
+                  login
+                  avatarUrl
+                }
+              }
+              repository {
+                name
+                owner {
+                  login
+                }
+              }
+            }
+          }
+        }
+        """
+        
+        variables = {"issueId": issue_id}
+        
+        # Special header for GraphQL API
+        custom_headers = {
+            "Accept": "application/vnd.github.v3+json"
+        }
+        
+        data = {
+            "query": query,
+            "variables": variables
+        }
+        
+        print(f"Fetching issue data with parent information for ID: {issue_id}")
+        response, status_code = self._make_request("POST", endpoint, data=data, custom_headers=custom_headers)
+        
+        if status_code != 200 or "errors" in response:
+            if "errors" in response:
+                errors = response.get("errors", [])
+                for error in errors:
+                    print(f"GraphQL error: {error.get('message', 'Unknown error')}")
+                    if 'type' in error:
+                        print(f"Error type: {error.get('type')}")
+                    if 'locations' in error:
+                        print(f"Error locations: {error.get('locations')}")
+            else:
+                print(f"Failed to get issue data: {response.get('error', 'Unknown error')}")
+            
+            return {}
+        
+        # Extract issue data
+        data = response.get("data", {})
+        node = data.get("node", {})
+        
+        if not node:
+            print(f"Issue not found with ID: {issue_id}")
+            return {}
+        
+        # Process and return issue data
+        issue_data = {
+            "id": node.get("id"),
+            "title": node.get("title"),
+            "number": node.get("number"),
+            "state": node.get("state"),
+            "url": node.get("url"),
+            "body": node.get("body", ""),
+            "parent_issues": [],
+            "related_issues": [],
+            "milestone": None,
+            "assignees": [],
+            "repository": None
+        }
+        
+        # Extract parent issues - direct parent
+        if "parent" in node and node["parent"]:
+            parent = node.get("parent", {})
+            issue_data["parent_issues"].append({
+                "id": parent.get("id"),
+                "title": parent.get("title"),
+                "number": parent.get("number"),
+                "url": parent.get("url"),
+                "relationship": "direct_parent"
+            })
+                
+        # Extract parent issues - tracked issues
+        if "trackedIssues" in node:
+            tracked = node.get("trackedIssues", {}).get("nodes", [])
+            for parent in tracked:
+                issue_data["parent_issues"].append({
+                    "id": parent.get("id"),
+                    "title": parent.get("title"),
+                    "number": parent.get("number"),
+                    "url": parent.get("url"),
+                    "relationship": "tracked_issues"
+                })
+                
+        # Extract child issues - tracked in issues
+        if "trackedInIssues" in node:
+            tracked_in = node.get("trackedInIssues", {}).get("nodes", [])
+            for child in tracked_in:
+                issue_data["related_issues"].append({
+                    "id": child.get("id"),
+                    "title": child.get("title"),
+                    "number": child.get("number"),
+                    "url": child.get("url"),
+                    "relationship": "tracked_in"
+                })
+                
+        # Extract related issues from timeline connections
+        if "linkedIssues" in node:
+            linked = node.get("linkedIssues", {}).get("nodes", [])
+            for item in linked:
+                # Check for ConnectedEvent or DisconnectedEvent
+                if "subject" in item:
+                    subject = item.get("subject", {})
+                    if subject:
+                        issue_data["related_issues"].append({
+                            "id": subject.get("id"),
+                            "title": subject.get("title"),
+                            "number": subject.get("number"),
+                            "url": subject.get("url"),
+                            "relationship": "linked" 
+                        })
+                # Check for CrossReferencedEvent
+                elif "source" in item:
+                    source = item.get("source", {})
+                    if source:
+                        issue_data["related_issues"].append({
+                            "id": source.get("id"),
+                            "title": source.get("title"),
+                            "number": source.get("number"),
+                            "url": source.get("url"),
+                            "relationship": "referenced"
+                        })
+        
+        # Extract milestone
+        if "milestone" in node and node["milestone"]:
+            issue_data["milestone"] = {
+                "id": node["milestone"].get("id"),
+                "title": node["milestone"].get("title"),
+                "due_on": node["milestone"].get("dueOn"),
+                "state": node["milestone"].get("state")
+            }
+        
+        # Extract assignees
+        if "assignees" in node:
+            assignees = node.get("assignees", {}).get("nodes", [])
+            for assignee in assignees:
+                issue_data["assignees"].append({
+                    "login": assignee.get("login"),
+                    "avatar_url": assignee.get("avatarUrl")
+                })
+        
+        # Extract repository
+        if "repository" in node:
+            repo = node.get("repository", {})
+            issue_data["repository"] = {
+                "name": repo.get("name"),
+                "owner": repo.get("owner", {}).get("login")
+            }
+        
+        # Try to find parent issue references in the body
+        body = node.get("body", "")
+        if body:
+            # Different parent-child reference patterns to look for
+            parent_number = None
+            
+            # "Parent: #XX" or "Parent: XX" format
+            parent_matches = re.findall(r"Parent:?\s+#?(\d+)", body, re.IGNORECASE)
+            if parent_matches:
+                parent_number = parent_matches[0]
+            
+            # "Child of #XX" format
+            if not parent_number:
+                child_matches = re.findall(r"Child of #?(\d+)", body, re.IGNORECASE)
+                if child_matches:
+                    parent_number = child_matches[0]
+            
+            # "Depends on #XX" format
+            if not parent_number:
+                depends_matches = re.findall(r"Depends on #?(\d+)", body, re.IGNORECASE)
+                if depends_matches:
+                    parent_number = depends_matches[0]
+            
+            # "Related to #XX" format
+            if not parent_number:
+                related_matches = re.findall(r"Related to #?(\d+)", body, re.IGNORECASE)
+                if related_matches:
+                    parent_number = related_matches[0]
+            
+            # Found a reference, create parent issue data
+            if parent_number:
+                repo_name = ""
+                repo_owner = ""
+                if "repository" in node:
+                    repo = node.get("repository", {})
+                    repo_name = repo.get("name", "")
+                    repo_owner = repo.get("owner", {}).get("login", "")
+                
+                if repo_name and repo_owner:
+                    parent_url = f"https://github.com/{repo_owner}/{repo_name}/issues/{parent_number}"
+                    issue_data["parent_issues"].append({
+                        "title": f"Issue #{parent_number}",
+                        "number": int(parent_number),
+                        "url": parent_url,
+                        "relationship": "mentioned_in_body"
+                    })
+        
+        return issue_data
+    
+    def post_process_project_items(self, project: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Proje verilerinde parent issue bilgisi null olan issue'lar için
+        içerik analizine dayalı parent bilgisini günceller. Sadece doğrudan parent
+        ilişkisi olan (direct_parent) işlemler için kullanılır.
+        
+        Args:
+            project: Proje verileri
+            
+        Returns:
+            Güncellenmiş proje verileri
+        """
+        if not project or "items" not in project:
+            return project
+        
+        print("Post-processing project items to find parent issues...")
+        
+        # Tüm issue'ları bir sözlükte toplayalım (repo/number şeklinde)
+        issue_by_identifier = {}
+        for item in project["items"]:
+            if "content" in item and item["content"].get("number"):
+                content = item["content"]
+                repo = item.get("repository", {})
+                if repo:
+                    repo_owner = repo.get("owner", "unknown")
+                    repo_name = repo.get("name", "unknown")
+                    issue_number = content.get("number")
+                    
+                    key = f"{repo_owner}/{repo_name}#{issue_number}"
+                    issue_by_identifier[key] = item
+        
+        # Parent ilişkisi güncellenecek öğeleri kontrol edelim
+        items_updated = 0
+        items_filtered = 0
+        
+        # Sadece direkt ilişkisi olmayan parent bilgilerini temizleme
+        for item in project["items"]:
+            if item.get("parent_issue") and item["parent_issue"].get("source") != "direct_parent":
+                # direct_parent dışında bir kaynak - temizle
+                del item["parent_issue"]
+                items_filtered += 1
+                
+        print(f"Post-processing completed. {items_filtered} non-direct parent relations filtered out.")
         return project 
