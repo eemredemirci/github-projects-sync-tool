@@ -12,6 +12,7 @@ from datetime import datetime
 from app.services.github_service import GitHubService
 from app.utils.yaml_converter import dict_to_yaml, yaml_to_dict, compare_yaml_json, merge_yaml_json
 from app.utils.language import get_text
+from app.utils.project_organizer import ProjectOrganizer
 
 
 class SyncService:
@@ -224,13 +225,21 @@ class SyncService:
         if not os.path.exists(project_dir):
             os.makedirs(project_dir)
         
-        # Save project data as JSON
+        # Save raw project data as JSON and YAML (these are the source of truth)
         json_file = os.path.join(project_dir, "project.json")
         self._save_json(project_data, json_file)
         
-        # Save project data as YAML
         yaml_file = os.path.join(project_dir, "project.yaml")
         self._save_yaml(project_data, yaml_file)
+        
+        # Organize project data into structured folders
+        organizer = ProjectOrganizer(project_dir)
+        organizer.organize(project_data)
+        
+        # Clean up old date-stamped versions
+        removed_count = organizer.cleanup_old_versions()
+        if removed_count > 0:
+            print(f"Cleaned up {removed_count} old version files")
         
         print(get_text('project_data_saved').format(project_id))
         return project_data
