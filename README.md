@@ -1,8 +1,10 @@
 # GitHub Project Management Tool
 
-A command-line tool for managing and synchronizing GitHub repositories and GitHub Projects locally. This tool allows you to work with GitHub Projects, issues, milestones, and roadmaps in both online and offline modes.
+A command-line tool for managing and synchronizing GitHub repositories and **GitHub Projects** locally. It bridges the GitHub REST API, local **JSON/YAML** storage, change review, and optional sync back to GitHub (issues, milestones, project fields).
 
-*GitHub projelerini ve depolarını yerel olarak yönetmek ve senkronize etmek için bir komut satırı aracı. Bu araç, GitHub Projects, sorunlar, kilometre taşları ve yol haritalarıyla hem çevrimiçi hem de çevrimdışı modlarda çalışmanıza olanak tanır.*
+*GitHub REST API ile yerel JSON/YAML depolama, değişiklik incelemesi ve isteğe bağlı olarak GitHub’a geri senkronizasyon (issue, milestone, proje alanları) sağlayan bir CLI aracı.*
+
+**Repository:** [eemredemirci/github-projects-sync-tool](https://github.com/eemredemirci/github-projects-sync-tool)
 
 ## Purpose
 
@@ -12,6 +14,7 @@ This tool bridges the gap between local development environments and GitHub's pr
 2. Enabling you to edit project data locally using YAML for better readability
 3. Providing synchronization capabilities to keep local and GitHub data consistent
 4. Supporting multiple users and repositories
+5. Offering advanced change tracking for safe synchronization with GitHub
 
 *Bu araç, yerel geliştirme ortamları ile GitHub'ın proje yönetimi özellikleri arasındaki boşluğu şu şekilde kapatır:*
 
@@ -19,6 +22,7 @@ This tool bridges the gap between local development environments and GitHub's pr
 *2. Daha iyi okunabilirlik için YAML kullanarak proje verilerini yerel olarak düzenlemenizi sağlar*
 *3. Yerel ve GitHub verilerini tutarlı tutmak için senkronizasyon yetenekleri sunar*
 *4. Birden fazla kullanıcı ve depo desteği sağlar*
+*5. GitHub ile güvenli senkronizasyon için gelişmiş değişiklik takibi sunar*
 
 For a detailed project definition, see [PROJECT_DEFINITION.md](PROJECT_DEFINITION.md).
 
@@ -31,11 +35,7 @@ For a detailed project definition, see [PROJECT_DEFINITION.md](PROJECT_DEFINITIO
 - User management with token storage ✅
 - Interactive CLI interface ✅
 - Command-line interface ✅
-
-Features that are still being tested:
-
-- Pushing local changes to GitHub Projects
-- Detecting changes between local and GitHub Projects
+- Change tracking and syncing to GitHub ✅
 
 *Not: Bu proje şu anda geliştirme aşamasındadır. Aşağıdaki özellikler çalışmaktadır:*
 
@@ -44,11 +44,7 @@ Features that are still being tested:
 *- Token depolama ile kullanıcı yönetimi ✅*
 *- Etkileşimli CLI arayüzü ✅*
 *- Komut satırı arayüzü ✅*
-
-*Hala test edilmekte olan özellikler:*
-
-*- Yerel değişiklikleri GitHub Projects'e gönderme*
-*- Yerel ve GitHub Projects arasındaki değişiklikleri tespit etme*
+*- Değişiklik takibi ve GitHub'a senkronizasyon ✅*
 
 ## Features
 
@@ -58,6 +54,7 @@ Features that are still being tested:
 - **Dual-Format Storage**: Work with both JSON and YAML formats
 - **Synchronization**: Detect and resolve changes between local and GitHub data
 - **Interactive CLI**: Color-coded output and command history tracking
+- **Change Tracking System**: Advanced system to detect, review, and approve changes before sending to GitHub
 
 *- **Kullanıcı Yönetimi**: Güvenli token depolama ile çoklu kullanıcı desteği*
 *- **Depo Yönetimi**: Depo verilerini görüntüleme ve çekme*
@@ -65,20 +62,21 @@ Features that are still being tested:
 *- **Çift Format Depolama**: Hem JSON hem de YAML formatlarıyla çalışma*
 *- **Senkronizasyon**: Yerel ve GitHub verileri arasındaki değişiklikleri tespit etme ve çözme*
 *- **Etkileşimli CLI**: Renkli çıktı ve komut geçmişi takibi*
+*- **Değişiklik Takip Sistemi**: GitHub'a göndermeden önce değişiklikleri tespit etme, inceleme ve onaylama için gelişmiş sistem*
 
 ## Installation
 
 ### Requirements
 
-- Python 3.6+
+- Python 3.8+ (önerilir)
 - pip
 
 ### Steps
 
 1. Clone the repository:
    ```
-   git clone https://github.com/username/GitHub-Project-Sync-Tool.git
-   cd GitHub-Project-Sync-Tool
+   git clone https://github.com/eemredemirci/github-projects-sync-tool.git
+   cd github-projects-sync-tool
    ```
 
 2. Install required packages:
@@ -111,6 +109,28 @@ python -m app.main --interactive
 
 - **Hierarchical navigation**: Clear menu structure showing the relationship between repositories and GitHub Projects
 
+### Change Tracking System
+
+The tool includes a comprehensive change tracking system that allows you to:
+
+1. **Detect changes** between original GitHub data and your local modifications
+2. **Review changes** before sending them to GitHub
+3. **Approve or reject** individual changes or in bulk
+4. **Track operations** for transparency and auditability
+5. **Synchronize safely** with GitHub
+
+#### Working with Local Files
+
+You can directly edit files in your file system:
+
+- **Adding new issues**: Create a new file named `issue_X.json` or `issue_X.yaml` in the appropriate milestone directory
+- **Updating issues**: Edit the existing issue files
+- **Deleting issues**: Remove the issue files
+- **Adding milestones**: Create a new directory under the `milestones/` folder with appropriate files
+- **Editing milestones**: Update the milestone files
+
+After making changes to your local files, use the "Manage Changes & Sync to GitHub" option in the project menu to detect, review, and approve these changes.
+
 ### Command Line Mode
 
 Command line mode is suitable for scripts and automation:
@@ -124,7 +144,7 @@ python -m app.main --help
 
 ```bash
 # Add user
-python -m app.main user add <username> <token> --email <email> --name <name>
+python -m app.main user add <username> <token> --email <email> --name <n>
 
 # List users
 python -m app.main user list
@@ -163,11 +183,8 @@ python -m app.main project fetch <project_id>
 # List local GitHub Projects
 python -m app.main sync list
 
-# Sync from YAML to JSON
-python -m app.main sync yaml2json <project_id> <project_name>
-
-# Sync from JSON to YAML
-python -m app.main sync json2yaml <project_id> <project_name>
+# Manage changes and synchronize with GitHub
+python -m app.main sync changes <project_id> <project_name>
 
 # Check for GitHub Project changes
 python -m app.main sync check <project_id> <project_name>
@@ -206,14 +223,16 @@ python -m app.main sync push <project_id> <project_name>
    python -m app.main project fetch 12345
    ```
 
-6. **Edit the YAML file manually** (located at `data/projects/12345_ProjectName/project.yaml`)
+6. **Edit the local files manually**:
+   - Add/edit/delete issues in `data/projects/12345_ProjectName/milestones/`
+   - Update milestone information
 
-7. **Sync changes from YAML to JSON**:
+7. **Detect and review changes**:
    ```
-   python -m app.main sync yaml2json 12345 "Project Name"
+   python -m app.main sync changes 12345 "Project Name"
    ```
 
-8. **Push changes to GitHub**:
+8. **Push approved changes to GitHub**:
    ```
    python -m app.main sync push 12345 "Project Name"
    ```
@@ -223,7 +242,7 @@ python -m app.main sync push <project_id> <project_name>
 The application stores data in the following directory structure:
 
 ```
-GitHub-Project-Sync-Tool/
+github-projects-sync-tool/
 ├── data/
 │   ├── users/
 │   │   └── users.json
@@ -234,7 +253,26 @@ GitHub-Project-Sync-Tool/
 │   ├── projects/
 │   │   └── <project_id>_<project_name>/
 │   │       ├── project.json
-│   │       └── project.yaml
+│   │       ├── project.yaml
+│   │       ├── .cache/
+│   │       │   └── original_state.json
+│   │       ├── .pending/
+│   │       │   └── github_operations.json
+│   │       ├── logs/
+│   │       │   └── sync_YYYYMMDD_HHMMSS.log
+│   │       ├── sync_history/
+│   │       │   └── YYYYMMDD_HHMMSS_sync_results.json
+│   │       └── milestones/
+│   │           ├── milestone_name/
+│   │           │   ├── milestone_name.json
+│   │           │   ├── issue_1.json
+│   │           │   ├── issue_2.json
+│   │           │   └── issue_3_parent/
+│   │           │       ├── issue_4.json
+│   │           │       └── issue_5.json
+│   │           └── no_milestone/
+│   │               ├── issue_6.json
+│   │               └── issue_7.json
 │   └── github_projects/
 │       └── <project_id>_<project_name>/
 │           └── project.json
