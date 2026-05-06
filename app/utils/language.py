@@ -137,17 +137,9 @@ translations = {
         "en": "Fetch Project Data",
         "tr": "Proje Verilerini İndir"
     },
-    "project_menu_send_to_github": {
-        "en": "Send Latest to GitHub",
-        "tr": "Son Değişiklikleri GitHub'a Gönder"
-    },
-    "project_menu_sync_yaml": {
-        "en": "Sync YAML to GitHub",
-        "tr": "YAML'ı GitHub'a Senkronize Et"
-    },
-    "project_menu_sync_json": {
-        "en": "Sync JSON to GitHub",
-        "tr": "JSON'ı GitHub'a Senkronize Et"
+    "project_menu_track_changes": {
+        "en": "Manage Changes & Sync to GitHub",
+        "tr": "Değişiklikleri Yönet ve GitHub'a Gönder"
     },
     "project_menu_view_yaml": {
         "en": "View YAML Content",

@@ -123,4 +123,8 @@ data/
 !data/projects/.gitkeep
 
 # IDE specific
-.cursor/ 
+.cursor/
+
+# Geçici çıktılar (yerel test / not)
+temp.txt
+test_output.txt 

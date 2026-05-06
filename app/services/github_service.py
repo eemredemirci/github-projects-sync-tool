@@ -25,38 +25,27 @@ class GitHubService:
         """
         self.token = token
         self.username = username
+        
+        # GitHub token tipini belirle ve uygun Authorization başlığını oluştur
+        # Classic token: "ghp_" ile başlar
+        # Fine-grained token: "github_pat_" ile başlar
+        auth_header = ""
+        if token.startswith("ghp_"):
+            auth_header = f"token {token}"
+        elif token.startswith("github_pat_"):
+            auth_header = f"token {token}"
+        else:
+            # Bilinen token formatı değilse, varsayılan format kullan
+            auth_header = f"token {token}"
+        
         self.headers = {
-            "Authorization": f"token {token}",
+            "Authorization": auth_header,
             "Accept": "application/vnd.github.v3+json"
         }
+        
         # Rate limit tracking
         self.rate_limit_remaining = 5000
         self.rate_limit_reset = 0
-        
-        # Debug token permissions
-        self._debug_token_permissions()
-    
-    def _debug_token_permissions(self):
-        """Debug token permissions to help diagnose access issues."""
-        try:
-            endpoint = "/user"
-            response, status_code = self._make_request("GET", endpoint)
-            
-            if status_code == 200:
-                # Token validation message removed
-                # print(f"Token validated. User: {response.get('login', 'Unknown')}")
-                
-                # Check scopes from response headers
-                if hasattr(response, 'headers') and 'X-OAuth-Scopes' in response.headers:
-                    scopes = response.headers['X-OAuth-Scopes']
-                    # print(f"Token permissions: {scopes}")
-                    
-                    if 'repo' not in scopes:
-                        print(get_text('token_warning_repo'))
-                    if 'project' not in scopes:
-                        print(get_text('token_warning_project'))
-        except Exception as e:
-            print(get_text('token_permission_check_error').format(str(e)))
     
     def _check_rate_limit(self):
         """Check if we need to wait for rate limit reset."""
@@ -64,7 +53,7 @@ class GitHubService:
             current_time = time.time()
             if current_time < self.rate_limit_reset:
                 wait_time = self.rate_limit_reset - current_time + 1
-                print(get_text('rate_limit_warning').format(int(wait_time)))
+                print(f"\033[33mAPI UYARI: {get_text('rate_limit_warning').format(int(wait_time))}\033[0m")
                 time.sleep(wait_time)
     
     def _update_rate_limit(self, response):
@@ -116,7 +105,20 @@ class GitHubService:
                     reset_time = int(response.headers.get('X-RateLimit-Reset', 0))
                     wait_time = max(0, reset_time - int(time.time()))
                     return {"error": f"Rate limit exceeded. Resets in {wait_time} seconds."}, response.status_code
-                return {"error": "Forbidden. You may not have permission to access this resource."}, response.status_code
+                
+                # Response body'den ek bilgileri al
+                error_body = ""
+                try:
+                    error_data = response.json()
+                    if isinstance(error_data, dict):
+                        error_body = error_data.get("message", "")
+                except:
+                    pass
+                
+                if "scopes" in error_body.lower() or "permission" in error_body.lower() or "oauth" in error_body.lower():
+                    return {"error": f"Forbidden. Your token lacks required permissions: {error_body}"}, response.status_code
+                    
+                return {"error": f"Forbidden. You may not have permission to access this resource: {error_body}"}, response.status_code
             elif response.status_code == 404:
                 return {"error": "Resource not found. Please check the URL and your permissions."}, response.status_code
             elif response.status_code >= 400:
@@ -148,28 +150,36 @@ class GitHubService:
         """
         endpoint = "/user"
         try:
+            # Token bilgisini gizleyerek göster
+            masked_token = f"{self.token[:4]}...{self.token[-4:]}" if len(self.token) > 8 else "****"
+            print(f"\033[36mGitHub token doğrulanıyor: {masked_token}\033[0m")
+            
             response, status_code = self._make_request("GET", endpoint)
             
+            # Basit durum kontrolü
             if status_code == 401:
-                print(get_text('token_validation_invalid'))
+                print(f"\033[31mGitHub token geçersiz! (401 Authentication failed)\033[0m")
                 return False
             elif status_code == 403:
+                # 403 durumunda token, doğru fakat izinleri yetersiz olabilir
+                # Bu durumda token geçerli kabul edelim ama kullanıcıyı uyaralım
+                print(f"\033[33mGitHub token yetersiz izinlere sahip olabilir. (403 Forbidden)\033[0m")
                 print(get_text('token_validation_permissions'))
-                return False
+                return True
             elif status_code >= 400:
-                print(get_text('token_validation_error').format(response.get('error', 'Unknown error'), status_code))
+                print(f"\033[31mGitHub token doğrulama hatası! (Status code: {status_code})\033[0m")
                 return False
             
             # Check user information
             if 'login' in response:
-                print(get_text('token_validated').format(response['login']))
-                if self.username and self.username != response['login']:
-                    print(get_text('token_different_user_warning').format(response['login']))
+                username = response.get('login')
+                print(f"\033[32mGitHub token başarıyla doğrulandı. Kullanıcı: {username}\033[0m")
                 return True
             
+            print(f"\033[32mGitHub token başarıyla doğrulandı.\033[0m")
             return status_code == 200
         except Exception as e:
-            print(get_text('token_validation_error_generic').format(str(e)))
+            print(f"\033[31mGitHub token doğrulama hatası: {str(e)}\033[0m")
             return False
     
     def get_user(self) -> Dict[str, Any]:
@@ -204,13 +214,12 @@ class GitHubService:
             "affiliation": "owner"  # Only repositories owned by the user
         }
         
-        print(f"Fetching user repositories: {endpoint}")
-        print(f"Parameters: {params}")
+        print(f"\033[36mKullanıcı repoları çekiliyor: {endpoint}\033[0m")
         
         response, status_code = self._make_request("GET", endpoint, params=params)
         
         if status_code != 200:
-            print(f"Failed to fetch user repositories: {response.get('error', 'Unknown error')}")
+            print(f"\033[31mKullanıcı repoları çekilemedi: {response.get('error', 'Unknown error')}\033[0m")
             return []
         
         # Create a list of repositories with only essential information
@@ -229,7 +238,7 @@ class GitHubService:
             }
             essential_repos.append(essential_repo)
         
-        print(f"Total {len(essential_repos)} repository found")
+        print(f"\033[32mToplam {len(essential_repos)} repo bulundu\033[0m")
         
         return essential_repos
     
@@ -649,6 +658,21 @@ class GitHubService:
         
         return repository_data
     
+    def _debug_log(self, message: str, level: str = "info") -> None:
+        """Debug mesajını düzenli bir şekilde göster.
+        
+        Args:
+            message: Mesaj
+            level: Mesaj seviyesi (info, warning, error)
+        """
+        # debug mesajlarını direkt print etmek daha basit
+        if level == "error":
+            print(f"\033[31mAPI HATA: {message}\033[0m")  # Kırmızı renk
+        elif level == "warning":
+            print(f"\033[33mAPI UYARI: {message}\033[0m")  # Sarı renk
+        else:
+            print(f"\033[36mAPI: {message}\033[0m")  # Cyan renk
+            
     def get_projects_v2(self, owner: str = None, repo: str = None) -> List[Dict[str, Any]]:
         """Return projects using the v2 API.
         
@@ -683,6 +707,7 @@ class GitHubService:
               }
             }
             """ % (owner, repo)
+            print(f"\033[36mRepo projeleri çekiliyor: {owner}/{repo}\033[0m")
         elif self.username:
             # User projects query
             query = """
@@ -703,6 +728,7 @@ class GitHubService:
               }
             }
             """ % self.username
+            print(f"\033[36mKullanıcı projeleri çekiliyor: {self.username}\033[0m")
         else:
             # Viewer (authenticated user) projects query
             query = """
@@ -723,6 +749,7 @@ class GitHubService:
               }
             }
             """
+            print(f"\033[36mOturum açmış kullanıcının projeleri çekiliyor\033[0m")
         
         # Special header for GraphQL API
         custom_headers = {
@@ -733,24 +760,23 @@ class GitHubService:
             "query": query
         }
         
-        print("Fetching Projects v2 using GraphQL API...")
         response, status_code = self._make_request("POST", endpoint, data=data, custom_headers=custom_headers)
         
         if status_code != 200 or "errors" in response:
             if "errors" in response:
                 errors = response.get("errors", [])
                 for error in errors:
-                    print(f"GraphQL error: {error.get('message', 'Unknown error')}")
+                    self._debug_log(f"GraphQL error: {error.get('message', 'Unknown error')}", "error")
                     # More detailed error information
                     if 'type' in error:
-                        print(f"Error type: {error.get('type')}")
+                        self._debug_log(f"Error type: {error.get('type')}", "warning")
                     if 'locations' in error:
-                        print(f"Error locations: {error.get('locations')}")
+                        self._debug_log(f"Error locations: {error.get('locations')}", "warning")
             else:
-                print(f"Failed to get projects v2: {response.get('error', 'Unknown error')}")
+                self._debug_log(f"Failed to get projects v2: {response.get('error', 'Unknown error')}", "error")
             
-            print("GraphQL query for GitHub Projects v2 failed.")
-            print("This may be due to token permissions or GitHub API changes.")
+            self._debug_log("GraphQL query for GitHub Projects v2 failed.", "warning")
+            self._debug_log("This may be due to token permissions or GitHub API changes.", "warning")
             return []
         
         # Extract projects from response
@@ -781,7 +807,7 @@ class GitHubService:
                 "is_v2": True
             })
         
-        print(f"Total {len(projects)} GitHub Projects v2 found.")
+        print(f"\033[32mToplam {len(projects)} GitHub Projects v2 projesi bulundu\033[0m")
         return projects
     
     def update_project(self, project_id: str, project_data: Dict[str, Any]) -> bool:
@@ -1118,6 +1144,9 @@ class GitHubService:
         Returns:
             Project information
         """
+        # Log işlemi - sadece bir kez
+        self._debug_log(f"Fetching Project v2 data for ID: {project_id}")
+        
         # GraphQL endpoint for Projects v2
         endpoint = "/graphql"
         
@@ -1324,31 +1353,31 @@ class GitHubService:
         
         # Special header for GraphQL API
         custom_headers = {
-            "Accept": "application/vnd.github.v3+json"
+            "Accept": "application/vnd.github.starfox-preview+json,application/vnd.github.bane-preview+json"
         }
         
         data = {
             "query": query
         }
         
-        print(f"Fetching Project v2 data for ID: {project_id}")
+        # İkinci log mesajını kaldırıyorum - gereksiz tekrar
         response, status_code = self._make_request("POST", endpoint, data=data, custom_headers=custom_headers)
         
         if status_code != 200 or "errors" in response:
             if "errors" in response:
                 errors = response.get("errors", [])
                 for error in errors:
-                    print(f"GraphQL error: {error.get('message', 'Unknown error')}")
+                    self._debug_log(f"GraphQL error: {error.get('message', 'Unknown error')}", "error")
                     # More detailed error information
                     if 'type' in error:
-                        print(f"Error type: {error.get('type')}")
+                        self._debug_log(f"Error type: {error.get('type')}", "warning")
                     if 'locations' in error:
-                        print(f"Error locations: {error.get('locations')}")
+                        self._debug_log(f"Error locations: {error.get('locations')}", "warning")
             else:
-                print(f"Failed to get project v2: {response.get('error', 'Unknown error')}")
+                self._debug_log(f"Failed to get project v2: {response.get('error', 'Unknown error')}", "error")
             
-            print("GraphQL query for GitHub Project v2 failed.")
-            print("This may be due to token permissions or GitHub API changes.")
+            self._debug_log("GraphQL query for GitHub Project v2 failed.", "warning")
+            self._debug_log("This may be due to token permissions or GitHub API changes.", "warning")
             return {}
         
         # Extract project from response
@@ -1356,7 +1385,7 @@ class GitHubService:
         node = data.get("node", {})
         
         if not node:
-            print(f"Project v2 not found with ID: {project_id}")
+            self._debug_log(f"Project v2 not found with ID: {project_id}", "error")
             return {}
         
         # Convert to format similar to v1 API
@@ -1494,10 +1523,10 @@ class GitHubService:
             
             project["items"].append(item_data)
         
-        print(f"Project v2 data fetched successfully: {project['name']}")
-        print(f"Fields: {len(project['fields'])}")
-        print(f"Items: {len(project['items'])}")
-        print(f"Related Repositories: {len(project['repositories'])}")
+        self._debug_log(f"Project v2 data fetched successfully: {project['name']}")
+        self._debug_log(f"Fields: {len(project['fields'])}")
+        self._debug_log(f"Items: {len(project['items'])}")
+        self._debug_log(f"Related Repositories: {len(project['repositories'])}")
         
         return project
     
@@ -1817,7 +1846,7 @@ class GitHubService:
         if not project or "items" not in project:
             return project
         
-        print("Post-processing project items to find parent issues...")
+        self._debug_log("Post-processing project items to find parent issues...")
         
         # Tüm issue'ları bir sözlükte toplayalım (repo/number şeklinde)
         issue_by_identifier = {}
@@ -1844,5 +1873,5 @@ class GitHubService:
                 del item["parent_issue"]
                 items_filtered += 1
                 
-        print(f"Post-processing completed. {items_filtered} non-direct parent relations filtered out.")
+        self._debug_log(f"Post-processing completed. {items_filtered} non-direct parent relations filtered out.")
         return project 

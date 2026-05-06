@@ -2,13 +2,15 @@
 GitHub Proje Yönetim Aracı için etkileşimli komut satırı arayüzü.
 """
 import os
+import re
 import sys
-import time
 import json
 import yaml
+import uuid
+import time
 import shutil
 import copy
-from typing import Dict, List, Any, Optional, Callable
+from typing import Dict, List, Any, Optional, Callable, Union
 from datetime import datetime
 import webbrowser
 import subprocess
@@ -60,7 +62,9 @@ class Colors:
     GITHUB = BLUE
     LOCAL = GREEN
     NAV = YELLOW
-    DISABLED = "\033[90m"  # Gray color
+    DISABLED = "\03.90m"  # Gray color
+    MILESTONE = GREEN
+    ISSUE = RED
 
 
 def print_info(message: str) -> None:
@@ -674,100 +678,104 @@ def update_all_from_github(user: Dict[str, Any]) -> bool:
 
 
 def update_token(user: Dict[str, Any]) -> bool:
-    """Token günceller.
+    """GitHub API tokenını günceller.
     
     Args:
         user: Kullanıcı bilgileri
         
     Returns:
-        bool: İşlem başarılı mı
+        İşlemin başarılı olup olmadığı
     """
-    try:
-        # Navigasyon
-        print_header("Token Güncelle")
-        print_navigation(["Ana Menü", user['username'], "Token Güncelle"])
-        
-        # Show current token (masked)
-        current_token = user["token"]
+    clear_screen()
+    print_header("GitHub Token Güncelleme")
+    print_navigation(["Ana Menü", user['username'], "Token Güncelleme"])
+    
+    print_info("GitHub Personal Access Token, GitHub API'sine erişmek için gereklidir.")
+    print_info("GitHub Projects v2 API için token oluşturma seçenekleri:")
+    print(f"\n{Colors.BOLD}1. Classic Token (Eski stil){Colors.RESET}")
+    print("Token oluşturma: https://github.com/settings/tokens")
+    print("Gerekli izinler:")
+    print("- repo (tüm alt izinler dahil)")
+    print("- project (tüm alt izinler dahil)")
+    print("- Yüksek rate limitleri sağlar")
+    
+    print(f"\n{Colors.BOLD}2. Fine-grained Token (Önerilen){Colors.RESET}")
+    print("Token oluşturma: https://github.com/settings/tokens?type=beta")
+    print("Gerekli izinler:")
+    print("- Repository permissions:")
+    print("  - Contents: Read and write")
+    print("  - Issues: Read and write")
+    print("  - Pull requests: Read and write") 
+    print("  - Projects: Read and write")
+    print("- Account permissions: ")
+    print("  - Project: Read and write")
+    print("")
+    print_info("Lütfen GitHub token'ınızı doğru ayarladığınızdan emin olun.")
+    
+    current_token = user.get('token', '')
+    if current_token:
         masked_token = current_token[:4] + "*" * (len(current_token) - 8) + current_token[-4:]
-        print_info(get_text('current_token').format(masked_token))
+        print_info(f"Mevcut token: {masked_token}")
         
-        # Get new token
-        print_info("\n" + get_text('new_token_prompt'))
-        new_token = getpass.getpass(get_text('new_token_prompt') + ": ")
+    print_info("Yeni GitHub tokenını girin (Eski tokenı kullanmak için boş bırakın):")
+    new_token = input().strip()
+    
+    if not new_token:
+        print_info("Token değiştirilmedi.")
+        wait_for_enter()
+        return False
+    
+    # Token geçerliliğini kontrol et
+    print_info("Token doğrulanıyor...")
+    from app.services.github_service import GitHubService
+    
+    gh_service = GitHubService(user.get('username', ''), new_token)
+    if gh_service.validate_token():
+        # Token geçerli, kaydet
+        user['token'] = new_token
         
-        if not new_token:
-            print_info(get_text('token_not_changed'))
-            wait_for_enter(True)
-            return False
-        
-        # Validate token
-        github_service = GitHubService(new_token)
-        user_info = github_service.get_user()
-        
-        if not user_info:
-            print_error(get_text('token_invalid_error'))
-            wait_for_enter(True)
-            return False
-        
-        # Kullanıcı adını kontrol et
-        username = user_info.get("login")
-        
-        if username != user["username"]:
-            print_error(f"Token farklı bir kullanıcıya ait: {username}")
-            print_error(f"Beklenen kullanıcı: {user['username']}")
-            wait_for_enter(True)
-            return False
-        
-        # Token'ı güncelle
-        user["token"] = new_token
-        
-        # Kullanıcı dosyasını güncelle
-        users_dir = os.path.join("data", "users")
-        user_file = os.path.join(users_dir, f"{user['username']}.json")
-        
-        with open(user_file, "w", encoding="utf-8") as f:
-            json.dump(user, f, indent=2, ensure_ascii=False)
-        
-        print_success("Token güncellendi.")
-        
-        # Cache dosyalarını sil
-        try:
-            # Repo cache dosyalarını sil
-            repo_cache_dir = os.path.join("data", "repositories")
-            if os.path.exists(repo_cache_dir):
-                repo_cache_files = [f for f in os.listdir(repo_cache_dir) if f.startswith(f"{user['username']}-repos-")]
-                for cache_file in repo_cache_files:
-                    os.remove(os.path.join(repo_cache_dir, cache_file))
-                    print_info(f"Repo cache dosyası silindi: {cache_file}")
+        # Kullanıcı bilgilerini kaydet
+        from app.services.user_service import UserService
+        if UserService.save_user(user):
+            print_success("GitHub token başarıyla güncellendi.")
             
-            # Eski repository project cache dosyalarını sil
-            old_repo_projects_cache_dir = os.path.join("data", "repositories", "projects")
-            if os.path.exists(old_repo_projects_cache_dir):
-                for file in os.listdir(old_repo_projects_cache_dir):
-                    if file.endswith("_projects_cache.json"):
-                        os.remove(os.path.join(old_repo_projects_cache_dir, file))
-                        print_info(f"Eski proje cache dosyası silindi: {file}")
+            # GraphQL API'si için özel izinleri kontrol et
+            print_info("GitHub Projects v2 API izinleri kontrol ediliyor...")
+            try:
+                # Test GraphQL sorgusu
+                test_query = """
+                query {
+                  viewer {
+                    login
+                  }
+                }
+                """
+                endpoint = "/graphql"
+                data = {"query": test_query}
+                custom_headers = {"Accept": "application/vnd.github.v3+json"}
+                
+                response, status_code = gh_service._make_request("POST", endpoint, data=data, custom_headers=custom_headers)
+                
+                if status_code == 200 and "data" in response and "viewer" in response["data"]:
+                    print_success("Token, GraphQL API'si için gerekli izinlere sahip.")
+                else:
+                    print_warning("Token, GraphQL API'si için gerekli tüm izinlere sahip olmayabilir.")
+                    print_info("GitHub Projects v2 API'si için 'project' izninin açık olduğundan emin olun.")
+            except Exception as e:
+                print_warning(f"GraphQL API izin kontrolü sırasında hata: {str(e)}")
+                print_info("Token çalışıyor ancak GitHub Projects v2 için ek izinler gerekebilir.")
             
-            # Proje cache dosyalarını sil
-            project_cache_dir = os.path.join("data", "projects")
-            if os.path.exists(project_cache_dir):
-                project_cache_files = [f for f in os.listdir(project_cache_dir) if f.startswith(f"{user['username']}-")]
-                for cache_file in project_cache_files:
-                    os.remove(os.path.join(project_cache_dir, cache_file))
-                    print_info(f"Proje cache dosyası silindi: {cache_file}")
-            
-            print_info("Tüm cache dosyaları silindi.")
-        except Exception as e:
-            print_error(f"Cache dosyaları silinirken hata oluştu: {str(e)}")
-        
-        wait_for_enter(True)
-        return True
-    except Exception as e:
-        print_error(f"Token güncellenirken hata oluştu: {str(e)}")
-        import traceback
-        print_error(f"Hata detayı: {traceback.format_exc()}")
-        wait_for_enter(True)
+            wait_for_enter()
+            return True
+        else:
+            print_error("Kullanıcı bilgileri kaydedilirken hata oluştu!")
+            wait_for_enter()
+            return False
+    else:
+        print_error("Geçersiz GitHub token! Token doğrulanamadı.")
+        print_info("Token'ınızın doğru olduğundan veya süresi dolmadığından emin olun.")
+        print_info("GitHub'ın API servislerinin çalıştığından emin olun.")
+        wait_for_enter()
         return False
 
 
@@ -1239,13 +1247,44 @@ def project_menu(user: Dict[str, Any], project: Dict[str, Any]):
     print(f"{Colors.BOLD}State:{Colors.RESET} {project['state']}")
     print(f"{Colors.BOLD}Number:{Colors.RESET} {project['number']}")
     
-    # Proje dosyalarını kontrol et
-    project_dir = os.path.join("data", "projects", f"{project['id']}_{project['name']}")
-    json_file = os.path.join(project_dir, "project.json")
-    yaml_file = os.path.join(project_dir, "project.yaml")
+    # Proje dosyalarını kontrol et - birden fazla format için kontrol yap
+    project_id = project['id']
     
-    has_json = os.path.exists(json_file)
-    has_yaml = os.path.exists(yaml_file)
+    # İsim seçeneklerini hazırla
+    name_options = []
+    if 'name' in project:
+        name_options.append(project['name'].replace(' ', '_').replace('/', '_'))
+    if 'title' in project:
+        name_options.append(project['title'].replace(' ', '_').replace('/', '_'))
+    
+    # Projelerin temel dizini
+    projects_dir = os.path.join("data", "projects")
+    
+    # Proje dizinini bul
+    project_dir = None
+    json_file = None
+    yaml_file = None
+    
+    # Doğrudan tam isimle dizini bulmaya çalış
+    for name in name_options:
+        potential_dir = os.path.join(projects_dir, f"{project_id}_{name}")
+        if os.path.exists(potential_dir):
+            project_dir = potential_dir
+            json_file = os.path.join(project_dir, "project.json")
+            yaml_file = os.path.join(project_dir, "project.yaml")
+            break
+    
+    # Doğrudan bulunamadıysa, dizinde arayarak bul
+    if project_dir is None and os.path.exists(projects_dir):
+        for dir_name in os.listdir(projects_dir):
+            if dir_name.startswith(f"{project_id}_"):
+                project_dir = os.path.join(projects_dir, dir_name)
+                json_file = os.path.join(project_dir, "project.json")
+                yaml_file = os.path.join(project_dir, "project.yaml")
+                break
+    
+    has_json = json_file and os.path.exists(json_file)
+    has_yaml = yaml_file and os.path.exists(yaml_file)
     
     if has_json or has_yaml:
         print(f"\n{Colors.BOLD}{get_text('local_files')}{Colors.RESET}")
@@ -1256,9 +1295,7 @@ def project_menu(user: Dict[str, Any], project: Dict[str, Any]):
     
     options = [
         {"name": get_text("project_menu_fetch"), "value": "fetch"},
-        {"name": get_text("project_menu_send_to_github"), "value": "send_to_github", "disabled": not (has_json or has_yaml)},
-        {"name": get_text("project_menu_sync_yaml"), "value": "sync_yaml", "disabled": not has_yaml},
-        {"name": get_text("project_menu_sync_json"), "value": "sync_json", "disabled": not has_json},
+        {"name": get_text("project_menu_track_changes"), "value": "track_changes", "disabled": not (has_json or has_yaml)},
         {"name": get_text("project_menu_view_yaml"), "value": "view_yaml", "disabled": not has_yaml},
         {"name": get_text("project_menu_open_location"), "value": "open_location", "disabled": not (has_json or has_yaml)},
         {"name": get_text("main_menu_back"), "value": "back"}
@@ -1269,102 +1306,187 @@ def project_menu(user: Dict[str, Any], project: Dict[str, Any]):
     choice = get_user_choice(len(options))
     if choice == "1":
         fetch_project_data(user, project)
-    elif choice == "2" and (has_json or has_yaml):
-        send_latest_to_github(user, project)
-    elif choice == "3" and has_yaml:
-        sync_yaml_to_github(user, project, yaml_file)
-    elif choice == "4" and has_json:
-        sync_json_to_github(user, project, json_file)
-    elif choice == "5" and has_yaml:
+        # Verileri indirdikten sonra tekrar menüyü göster ki seçenekler aktif olsun
+        project_menu(user, project)
+        return
+    elif choice == "2" and not options[1]["disabled"]:
+        change_tracking_menu(user, project, project_dir)
+    elif choice == "3" and not options[2]["disabled"]:
         view_yaml_content(yaml_file)
-    elif choice == "6" and (has_json or has_yaml):
+    elif choice == "4" and not options[3]["disabled"]:
         open_file_location(project_dir)
-    elif choice == "7" or choice == "back":
+    elif choice == "5" or choice == "back":
         return
     
     project_menu(user, project)
 
 
 def fetch_project_data(user: Dict[str, Any], project: Dict[str, Any]) -> bool:
-    """GitHub'dan proje verilerini çeker ve JSON/YAML olarak kaydeder.
+    """
+    GitHub'dan proje verilerini indirir ve yapılandırılmış JSON/YAML dosyalarına kaydeder.
+    Ayrıca issue içeriklerini analiz ederek parent-child ilişkilerini belirler.
     
     Args:
         user: Kullanıcı bilgileri
         project: Proje bilgileri
         
     Returns:
-        bool: İşlem başarılı mı
+        İşlemin başarılı olup olmadığı
     """
+    from app.services.github_service import GitHubService
+    from app.utils.project_organizer import ProjectOrganizer
+    from app.utils.change_tracker import ChangeTracker
+    import re
+    
+    # İşlem başlangıcını göster
+    clear_screen()
+    print_header(f"Proje Verilerini İndirme: {Colors.GITHUB}{project.get('name', '')}{Colors.RESET}")
+    print_navigation(["Ana Menü", user['username'], project.get('name', ''), "Veri İndirme"])
+    
+    # GitHub servisini oluştur - PARAMETRELERIN SIRASI ÖNEMLİ, token ilk parametre
+    gh_service = GitHubService(user["token"], user["username"])
+    
+    # Proje ID'sini al
+    project_id = project.get("id", "")
+    project_name = project.get("name", "")
+    
+    if not project_id:
+        print_error("Geçersiz proje ID'si!")
+        wait_for_enter()
+        return False
+    
+    # Proje dizinini belirle
+    projects_dir = os.path.join("data", "projects")
+    if not os.path.exists(projects_dir):
+        os.makedirs(projects_dir)
+    
+    # Proje adını klasör adına dönüştür
+    safe_project_name = project_id
+    if project_name:
+        # Dosya sisteminde güvenli bir isim oluştur
+        safe_name = project_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+        safe_project_name = f"{project_id}_{safe_name}"
+    
+    # Proje dizinini oluştur
+    project_dir = os.path.join(projects_dir, safe_project_name)
+    if not os.path.exists(project_dir):
+        os.makedirs(project_dir)
+    
+    print_info(f"İndirilen veriler {project_dir} dizinine kaydedilecek")
+    
+    # Proje verilerini indir - ana akış başlıyor
+    print_info(f"GitHub'dan proje verilerini indiriliyor: {project_name} (ID: {project_id})")
+    
     try:
-        # GitHub servisini oluştur
-        github_service = GitHubService(user["token"], user["username"])
+        # 1. GitHub token'ı kontrol et
+        is_validated = gh_service.validate_token()
         
-        # Senkronizasyon servisini oluştur
-        sync_service = SyncService(github_service)
+        if not is_validated:
+            print_error("GitHub token doğrulanamadı. Token geçersiz olabilir veya süresi dolmuş olabilir.")
+            print_info("Yeni bir token oluşturmak için: https://github.com/settings/tokens")
+            print_info("Token'ı güncellemek ister misiniz? (E/H)")
+            
+            choice = input().strip().lower()
+            if choice in ["e", "evet"]:
+                update_token(user)
+                print_info("Lütfen 'Proje Verilerini İndir' seçeneğini tekrar deneyin.")
+                wait_for_enter()
+                return False
+            else:
+                print_info("Token güncellenmedi. İşlem iptal edildi.")
+                wait_for_enter()
+                return False
         
-        # Proje verilerini çek
-        project_id = project["id"]
-        project_name = project.get("title", project.get("name", ""))
+        # 2. GraphQL API ile proje verilerini çek
+        print_info("GraphQL API ile proje verileri çekiliyor...")
+        project_data = gh_service.get_project_v2(project_id)
         
-        print_github_info(f"GitHub'dan proje verileri çekiliyor: {project_name}")
+        # Hata kontrolü
+        if isinstance(project_data, dict) and "error" in project_data:
+            error_msg = project_data["error"]
+            print_error(f"GitHub'dan veri alınırken hata: {error_msg}")
+            
+            # OAuth token hatası kontrolü
+            if "authentication" in error_msg.lower() or "token" in error_msg.lower() or "failed" in error_msg.lower() or "oauth" in error_msg.lower():
+                print_error("GitHub token hatası! GitHub API erişimi için yeterli izinler gereklidir.")
+                # Token maskeli göster - sadece ilk 4 ve son 4 karakter
+                masked_token = f"{user['token'][:4]}...{user['token'][-4:]}" if len(user['token']) > 8 else "****"
+                print_info(f"Kullanılan token: {masked_token}")
+                print_info("GraphQL API ve Projects v2 için özel izinler gereklidir:")
+                print_info("1. Tokeni GitHub'da oluştururken 'repo' ve 'project' izinlerini seçtiğinizden emin olun")
+                print_info("2. Klasik token (classic) seçeneğini kullanın")
+                print_info("")
+                print_info("Tokenınızı güncellemek ister misiniz? (E/H)")
+                choice = input().strip().lower()
+                
+                if choice == "e" or choice == "evet":
+                    # Token güncelleme fonksiyonunu çağır
+                    print_info("Token güncelleme ekranına yönlendiriliyorsunuz...")
+                    update_token(user)
+                    
+                    # Mevcut fonksiyondan çık
+                    return False
+            
+            wait_for_enter()
+            return False
         
-        # GitHub'dan proje verilerini al
-        github_data = github_service.get_project_v2(project_id)
+        # Empty data check
+        if not project_data or not isinstance(project_data, dict) or not project_data:
+            print_error("Proje verileri indirilemedi. Boş veya geçersiz veri alındı.")
+            wait_for_enter()
+            return False
         
         # Parent issue ilişkilerini analiz et
         try:
             print_info("Issue içeriklerini analiz ederek parent ilişkileri tespit ediliyor...")
-            github_data = github_service.post_process_project_items(github_data)
+            project_data = gh_service.post_process_project_items(project_data)
         except Exception as e:
             print_warning(f"Issue ilişkileri analiz edilirken hata oluştu: {str(e)}")
         
-        if not github_data:
-            print_error(f"Proje verileri çekilemedi: {project_name}")
-            print_info("Proje silinmiş veya erişim izniniz olmayabilir.")
+        print_success(f"Proje verileri başarıyla indirildi: {len(project_data.get('items', []))} öğe")
+        
+        # Project Organizer ile verileri düzenli bir yapıya dönüştür
+        print_info("Proje verileri düzenli bir yapıya dönüştürülüyor...")
+        organizer = ProjectOrganizer(project_dir)
+        if not organizer.organize(project_data):
+            print_error("Proje verilerini düzenli yapıya dönüştürme başarısız oldu!")
+            wait_for_enter()
             return False
         
-        # Proje dizinini oluştur
-        project_dir = os.path.join(sync_service.projects_dir, f"{project_id}_{project_name.replace(' ', '_').replace('/', '_')}")
-        os.makedirs(project_dir, exist_ok=True)
+        # İndirilen verileri orijinal durum olarak kaydediyoruz (referans durumu)
+        # Bu, ilk indirmeden sonra değişiklik olarak algılanmasını önler
+        print_info("Referans durumu için orijinal verileri kaydediyoruz...")
         
-        # Ana proje dosyalarını kaydet
-        json_file = os.path.join(project_dir, "project.json")
-        with open(json_file, "w", encoding="utf-8") as f:
-            json.dump(github_data, f, indent=2, ensure_ascii=False)
-        print_success(f"JSON dosyası kaydedildi: {shorten_path(json_file)}")
-        
-        yaml_file = os.path.join(project_dir, "project.yaml")
-        with open(yaml_file, "w", encoding="utf-8") as f:
-            yaml.dump(github_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
-        print_success(f"YAML dosyası kaydedildi: {shorten_path(yaml_file)}")
-        
-        # ProjectOrganizer ile yapılandırılmış klasör yapısını oluştur
-        from app.utils.project_organizer import ProjectOrganizer
-        organizer = ProjectOrganizer(project_dir)
-        if organizer.organize(github_data):
-            print_success("Proje verileri yapılandırılmış klasörlere kaydedildi")
+        # ChangeTracker oluştur ve orijinal durumu kaydet
+        tracker = ChangeTracker(project_dir)
+        if tracker.capture_original_state(project_data):
+            print_success("Orijinal durum kaydedildi. Değişiklik tespiti artık doğru çalışacak.")
         else:
-            print_error("Proje verilerini yapılandırılmış klasörlere kaydederken hata oluştu")
+            print_warning("Orijinal durum kaydedilemedi. Değişiklik takibi etkilenebilir.")
         
-        # Eski sürüm dosyalarını temizle
-        removed_count = organizer.cleanup_old_versions()
-        if removed_count > 0:
-            print_info(f"{removed_count} eski sürüm dosyası temizlendi")
-        
-        # Proje adı değişmiş mi kontrol et
-        github_project_name = github_data.get("title", github_data.get("name", ""))
-        if github_project_name and github_project_name != project_name:
-            print_info(f"Proje adı değişmiş: {project_name} -> {github_project_name}")
-            if "title" in project:
-                project["title"] = github_project_name
-            if "name" in project:
-                project["name"] = github_project_name
-        
+        print_success("İşlem tamamlandı. Proje verileri başarıyla indirildi ve düzenlendi.")
+        if not project.get("local_path"):
+            # Yerel yolu güncelle
+            project["local_path"] = project_dir
+            
+            # Kullanıcının projelerini güncelle
+            for i, p in enumerate(user.get("projects", [])):
+                if p.get("id") == project_id:
+                    user["projects"][i] = project
+                    break
+                
+            # Kullanıcı bilgilerini kaydet
+            from app.services.user_service import UserService
+            UserService.save_user(user)
+            
+        print_info(f"Proje verileri yerel diskten kullanılabilir: {project_dir}")
+        print_info("Ana menüye döndüğünüzde tüm proje seçenekleri aktif olacaktır.")
+        wait_for_enter()
         return True
+        
     except Exception as e:
-        print_error(f"Proje verileri çekilirken hata oluştu: {str(e)}")
-        import traceback
-        print_error(f"Hata detayı: {traceback.format_exc()}")
+        print_error(f"Proje verileri indirilirken hata oluştu: {str(e)}")
+        wait_for_enter()
         return False
 
 
@@ -1745,6 +1867,322 @@ def update_repository(user: Dict[str, Any], repository: Dict[str, Any]) -> Dict[
         return repository
 
 
+def change_tracking_menu(user, project, project_dir):
+    """
+    Değişiklik yönetimi menüsünü görüntüler ve değişikliklerle ilgili işlemleri yönetir.
+    
+    Args:
+        user: Kullanıcı bilgileri
+        project: Proje bilgileri
+        project_dir: Proje dizini
+    """
+    os.system('cls' if os.name == 'nt' else 'clear')
+    
+    # Başlığı ve gezinme yolunu göster
+    print("=" * 80)
+    print("Değişiklik Takip: " + project.get("title", ""))
+    print("=" * 80)
+    print(f"Navigasyon: Ana Menü > {user['username']} > {project.get('title', '')} > Değişiklik Takip")
+    
+    # Değişiklikleri algıla
+    print("Yerel dosyalar taranıyor...")
+    
+    from app.utils.change_tracker import ChangeTracker
+    
+    tracker = ChangeTracker(
+        project_dir=project_dir,
+        project_id=project.get("id", ""),
+        project_name=project.get("title", ""),
+        auto_save=True  # Değişiklikleri otomatik kaydet
+    )
+    
+    # Yerel dosyaları tara
+    print("Yerel dosyaları taranıyor...")
+    tracker.scan_current_state()
+    
+    # Değişiklikleri algıla
+    print("Değişiklikler tespit ediliyor...")
+    changes = tracker.detect_changes()
+    
+    # Değişiklikleri göster
+    total_changes = len(changes["created"]) + len(changes["updated"]) + len(changes["deleted"])
+    
+    while True:
+        os.system('cls' if os.name == 'nt' else 'clear')
+        
+        # Başlığı ve gezinme yolunu göster
+        print("=" * 80)
+        print("Değişiklik Takip: " + project.get("title", ""))
+        print("=" * 80)
+        print(f"Navigasyon: Ana Menü > {user['username']} > {project.get('title', '')} > Değişiklik Takip")
+        
+        print(f"\nToplam değişiklik sayısı: {total_changes}")
+        print(f"- Eklenen: {len(changes['created'])}")
+        print(f"- Güncellenen: {len(changes['updated'])}")
+        print(f"- Silinen: {len(changes['deleted'])}")
+        
+        if total_changes == 0:
+            print("\nSeçenekler:")
+            print("  1. Yerel değişiklikleri tekrar algıla")
+            print("  2. GitHub'dan değişiklikleri kontrol et")
+            print("  3. Geri")
+            
+            choice = input("\nSeçiminizi girin (1-3): ")
+            
+            if choice == "1":
+                # Değişiklikleri yeniden algıla
+                print("Yerel dosyaları taranıyor...")
+                tracker.scan_current_state()
+                
+                print("Değişiklikler tespit ediliyor...")
+                changes = tracker.detect_changes()
+                
+                total_changes = len(changes["created"]) + len(changes["updated"]) + len(changes["deleted"])
+                input("\nDevam etmek için Enter'a basın...")
+            elif choice == "2":
+                # GitHub'dan değişiklikleri kontrol et (henüz uygulanmadı)
+                print("\nBu özellik henüz uygulanmadı.")
+                input("\nDevam etmek için Enter'a basın...")
+            elif choice == "3":
+                # Projeye geri dön
+                return
+            else:
+                print("\nGeçersiz seçim. Lütfen tekrar deneyin.")
+                input("\nDevam etmek için Enter'a basın...")
+        else:
+            # Değişiklikler varsa farklı bir menü göster
+            print("\nSeçenekler:")
+            print("  1. Değişiklikleri görüntüle")
+            print("  2. Değişiklikleri GitHub'a gönder")
+            print("  3. Değişiklikleri yok say")
+            print("  4. Başlık tutarsızlıklarını düzelt")
+            print("  5. Geri")
+            
+            choice = input("\nSeçiminizi girin (1-5): ")
+            
+            if choice == "1":
+                # Değişiklikleri görüntüle
+                view_changes(changes)
+                input("\nDevam etmek için Enter'a basın...")
+            elif choice == "2":
+                # Değişiklikleri GitHub'a gönder
+                send_changes_menu(user, project, tracker, changes)
+                # Değişiklikler gönderildikten sonra yeniden algıla
+                print("Değişiklikler yeniden taranıyor...")
+                tracker.scan_current_state()
+                changes = tracker.detect_changes()
+                total_changes = len(changes["created"]) + len(changes["updated"]) + len(changes["deleted"])
+            elif choice == "3":
+                # Değişiklikleri yok say
+                print("\nDeğişiklikler yok sayılacak ve mevcut durum yeni başlangıç noktası olarak kaydedilecek.")
+                confirm = input("Emin misiniz? (E/H): ")
+                
+                if confirm.upper() == "E":
+                    tracker.save_current_as_original()
+                    print("\nDeğişiklikler başarıyla yok sayıldı.")
+                    # Değişiklikleri yeniden algıla (artık 0 olmalı)
+                    changes = tracker.detect_changes()
+                    total_changes = len(changes["created"]) + len(changes["updated"]) + len(changes["deleted"])
+                
+                input("\nDevam etmek için Enter'a basın...")
+            elif choice == "4":
+                # Başlık tutarsızlıklarını düzelt
+                print("\nTüm sorun dosyalarındaki başlık tutarsızlıkları kontrol ediliyor...")
+                updated_count = tracker.sync_all_issue_titles()
+                print(f"\nToplam {updated_count} dosyada başlık tutarsızlığı düzeltildi.")
+                
+                if updated_count > 0:
+                    # Değişiklikleri yeniden algıla
+                    print("Değişiklikler yeniden taranıyor...")
+                    tracker.scan_current_state()
+                    changes = tracker.detect_changes()
+                    total_changes = len(changes["created"]) + len(changes["updated"]) + len(changes["deleted"])
+                
+                input("\nDevam etmek için Enter'a basın...")
+            elif choice == "5":
+                # Projeye geri dön
+                return
+            else:
+                print("\nGeçersiz seçim. Lütfen tekrar deneyin.")
+                input("\nDevam etmek için Enter'a basın...")
+    
+
+def view_operation_list(user: Dict[str, Any], project: Dict[str, Any], project_dir: str):
+    """
+    Operasyon listesini görüntüler.
+    
+    Args:
+        user: Kullanıcı bilgileri
+        project: Proje bilgileri
+        project_dir: Proje dizini
+    """
+    from app.utils.operation_list import OperationList
+    
+    clear_screen()
+    project_title = project.get('title', project.get('name', 'Unknown Project'))
+    print_header(f"Operasyon Listesi: {Colors.GITHUB}{project_title}{Colors.RESET}")
+    print_navigation(["Ana Menü", user['username'], project_title, "Değişiklik Takip", "Operasyon Listesi"])
+    
+    # Operasyon listesi nesnesi oluştur
+    op_list = OperationList(project_dir)
+    
+    # Operasyonları al
+    operations = op_list.get_operations()
+    
+    if not operations:
+        print_info("Operasyon listesi boş.")
+        print_info("Değişiklikleri onayladıktan sonra operasyon listesi otomatik olarak oluşturulacaktır.")
+        wait_for_enter()
+        return
+    
+    # Operasyonları listele
+    print_info(f"\nToplam {len(operations)} operasyon bulundu:")
+    print("\n{:<5} {:<15} {:<15} {:<50}".format("#", "Operasyon", "Durum", "Açıklama"))
+    print("-" * 85)
+    
+    for i, op in enumerate(operations, 1):
+        op_type = op["operation_type"]
+        item_type = op["item_type"]
+        status = op["status"]
+        
+        # Açıklama oluştur
+        description = ""
+        if item_type == "issue":
+            if op_type == "create":
+                description = f"Yeni issue oluşturulacak: {op['data'].get('title', '')}"
+            elif op_type == "update":
+                description = f"Issue #{op['data'].get('issue_number', '')} güncellenecek"
+            elif op_type == "delete":
+                description = f"Issue #{op['data'].get('issue_number', '')} silinecek"
+        elif item_type == "milestone":
+            if op_type == "create":
+                description = f"Yeni milestone oluşturulacak: {op['data'].get('title', '')}"
+            elif op_type == "update":
+                description = f"Milestone #{op['data'].get('milestone_number', '')} güncellenecek"
+            elif op_type == "delete":
+                description = f"Milestone #{op['data'].get('milestone_number', '')} silinecek"
+        
+        # Durum rengini belirle
+        if status == "pending":
+            status_color = Colors.WARNING
+        elif status == "completed":
+            status_color = Colors.SUCCESS
+        elif status == "failed":
+            status_color = Colors.ERROR
+        else:
+            status_color = Colors.RESET
+        
+        print("{:<5} {:<15} {}{:<15}{} {:<50}".format(
+            i, f"{op_type}_{item_type}", status_color, status, Colors.RESET, description[:50]))
+    
+    # Menü seçenekleri
+    print(f"\n{Colors.BOLD}Seçenekler:{Colors.RESET}")
+    print(f"  {Colors.BOLD}1.{Colors.RESET} Operasyon Listesini Temizle")
+    print(f"  {Colors.BOLD}2.{Colors.RESET} Geri Dön")
+    
+    choice = input(f"\n{Colors.BOLD}Seçiminiz:{Colors.RESET} ").strip()
+    
+    if choice == "1":
+        # Operasyon listesini temizle
+        confirm = input(f"{Colors.WARNING}Tüm operasyonlar silinecek. Onaylıyor musunuz? (e/h):{Colors.RESET} ").strip().lower()
+        if confirm == "e":
+            op_list.clear_operations()
+            print_success("Operasyon listesi temizlendi.")
+    
+    wait_for_enter()
+
+
+def send_changes_to_github(user: Dict[str, Any], project: Dict[str, Any], project_dir: str):
+    """
+    Onaylanan değişiklikleri GitHub'a gönderir.
+    
+    Args:
+        user: Kullanıcı bilgileri
+        project: Proje bilgileri
+        project_dir: Proje dizini
+    """
+    from app.utils.operation_list import OperationList
+    from app.utils.github_synchronizer import GitHubSynchronizer
+    from app.services.github_service import GitHubService
+    
+    clear_screen()
+    project_title = project.get('title', project.get('name', 'Unknown Project'))
+    print_header(f"GitHub'a Gönder: {Colors.GITHUB}{project_title}{Colors.RESET}")
+    print_navigation(["Ana Menü", user['username'], project_title, "Değişiklik Takip", "GitHub'a Gönder"])
+    
+    # Operasyon listesi nesnesi oluştur
+    op_list = OperationList(project_dir)
+    
+    # Operasyonları al
+    operations = op_list.get_operations(status="pending")
+    
+    if not operations:
+        print_info("Gönderilecek değişiklik yok. Önce değişiklikleri onaylamalısınız.")
+        wait_for_enter()
+        return
+    
+    # Operasyonları listele
+    print_info(f"\nToplam {len(operations)} operasyon GitHub'a gönderilecek:")
+    print("\n{:<5} {:<15} {:<50}".format("#", "Operasyon", "Açıklama"))
+    print("-" * 70)
+    
+    for i, op in enumerate(operations, 1):
+        op_type = op["operation_type"]
+        item_type = op["item_type"]
+        
+        # Açıklama oluştur
+        description = ""
+        if item_type == "issue":
+            if op_type == "create":
+                description = f"Yeni issue oluşturulacak: {op['data'].get('title', '')}"
+            elif op_type == "update":
+                description = f"Issue #{op['data'].get('issue_number', '')} güncellenecek"
+            elif op_type == "delete":
+                description = f"Issue #{op['data'].get('issue_number', '')} silinecek"
+        elif item_type == "milestone":
+            if op_type == "create":
+                description = f"Yeni milestone oluşturulacak: {op['data'].get('title', '')}"
+            elif op_type == "update":
+                description = f"Milestone #{op['data'].get('milestone_number', '')} güncellenecek"
+            elif op_type == "delete":
+                description = f"Milestone #{op['data'].get('milestone_number', '')} silinecek"
+        
+        print("{:<5} {:<15} {:<50}".format(i, f"{op_type}_{item_type}", description[:50]))
+    
+    # Onay iste
+    print(f"\n{Colors.WARNING}Uyarı: Bu işlem GitHub üzerinde gerçek değişiklikler yapacaktır.{Colors.RESET}")
+    confirm = input(f"{Colors.BOLD}Değişiklikleri GitHub'a göndermek istiyor musunuz? (e/h):{Colors.RESET} ").strip().lower()
+    
+    if confirm != "e":
+        print_info("İşlem iptal edildi.")
+        wait_for_enter()
+        return
+    
+    # GitHub servisini ve senkronizasyon nesnesini oluştur
+    github_service = GitHubService(user["token"], user["username"])
+    synchronizer = GitHubSynchronizer(project_dir, github_service)
+    
+    # İşlemleri gerçekleştir
+    print_info("\nGitHub'a değişiklikler gönderiliyor...")
+    results = synchronizer.execute_operations(operations)
+    
+    # Sonuçları göster
+    print_info(f"\nToplam: {results['total_operations']}, Başarılı: {results['successful_operations']}, Başarısız: {results['failed_operations']}")
+    
+    if results['failed_operations'] > 0:
+        print_error("Başarısız işlemler:")
+        for op in results['operations']:
+            if not op['success']:
+                print(f"  {Colors.ERROR}- {op['operation_type']} {op['item_type']}: {op['result']}{Colors.RESET}")
+    
+    # İşlem başarılıysa, projenin en son halini tekrar indir
+    if results['successful_operations'] > 0:
+        print_info("\nProje verilerini GitHub'dan yeniden çekiyoruz...")
+        fetch_project_data(user, project)
+    
+    wait_for_enter()
+
+
 def main_menu() -> None:
     """Ana menüyü gösterir."""
     clear_screen()
@@ -1811,6 +2249,92 @@ def main():
         import traceback
         print_error(f"Hata detayı: {traceback.format_exc()}")
         sys.exit(1)
+
+
+def view_changes(changes):
+    """
+    Algılanan değişiklikleri görüntüler.
+    
+    Args:
+        changes: Değişiklik bilgileri içeren sözlük
+    """
+    os.system('cls' if os.name == 'nt' else 'clear')
+    
+    # Başlığı göster
+    print("=" * 80)
+    print("Değişiklik Görüntüleme")
+    print("=" * 80)
+    
+    # Eklenen öğeleri göster
+    if changes["created"]:
+        print("\nEKLENEN ÖĞELER:")
+        print("-" * 40)
+        for i, item in enumerate(changes["created"], 1):
+            print(f"{i}. {item.get('type', 'Bilinmeyen')} - {item.get('title', 'Başlık yok')}")
+            if "file_path" in item:
+                print(f"   Dosya: {item['file_path']}")
+            print()
+    
+    # Güncellenen öğeleri göster
+    if changes["updated"]:
+        print("\nGÜNCELLENEN ÖĞELER:")
+        print("-" * 40)
+        for i, item in enumerate(changes["updated"], 1):
+            print(f"{i}. {item.get('type', 'Bilinmeyen')} - {item.get('title', 'Başlık yok')}")
+            if "file_path" in item:
+                print(f"   Dosya: {item['file_path']}")
+            
+            # Değişen alanları göster
+            if "changes" in item:
+                print("   Değişen alanlar:")
+                for field, change in item["changes"].items():
+                    old_val = change.get("old", "")
+                    new_val = change.get("new", "")
+                    
+                    # Uzun değerleri kısalt
+                    if isinstance(old_val, str) and len(old_val) > 50:
+                        old_val = old_val[:47] + "..."
+                    if isinstance(new_val, str) and len(new_val) > 50:
+                        new_val = new_val[:47] + "..."
+                        
+                    print(f"   - {field}: '{old_val}' -> '{new_val}'")
+            print()
+    
+    # Silinen öğeleri göster
+    if changes["deleted"]:
+        print("\nSİLİNEN ÖĞELER:")
+        print("-" * 40)
+        for i, item in enumerate(changes["deleted"], 1):
+            print(f"{i}. {item.get('type', 'Bilinmeyen')} - {item.get('title', 'Başlık yok')}")
+            print()
+
+def send_changes_menu(user, project, tracker, changes):
+    """
+    Değişiklikleri GitHub'a gönderme menüsünü gösterir.
+    
+    Args:
+        user: Kullanıcı bilgileri
+        project: Proje bilgileri
+        tracker: ChangeTracker nesnesi
+        changes: Değişiklik bilgileri içeren sözlük
+    """
+    os.system('cls' if os.name == 'nt' else 'clear')
+    
+    # Başlığı göster
+    print("=" * 80)
+    print("Değişiklikleri GitHub'a Gönder")
+    print("=" * 80)
+    
+    total_changes = len(changes["created"]) + len(changes["updated"]) + len(changes["deleted"])
+    print(f"\nToplam {total_changes} değişiklik tespit edildi:")
+    print(f"- {len(changes['created'])} eklenen öğe")
+    print(f"- {len(changes['updated'])} güncellenen öğe")
+    print(f"- {len(changes['deleted'])} silinen öğe")
+    
+    print("\nBu fonksiyon henüz uygulanmadı. GitHub API entegrasyonu geliştirilmektedir.")
+    print("Değişiklikler şu anda yalnızca yerel olarak izlenebilir.")
+    
+    input("\nDevam etmek için Enter'a basın...")
 
 
 if __name__ == "__main__":
